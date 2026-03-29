@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>疼痛科手术排程系统 - 豪华版</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif; }
+    .dark { background-color: #1a1a1a; color: #fff; }
+    .dark .card { background-color: #2d2d2d; border-color: #444; }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 50; }
+    .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+    .scrollbar-hide::-webkit-scrollbar { display: none; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useCallback } = React;
+    const e = React.createElement;
+
+    // 存储服务
+    const StorageService = {
+      getAll: () => {
+        try {
+          const data = localStorage.getItem('surgery_schedule_data');
+          return data ? JSON.parse(data) : [];
+        } catch { return []; }
+      },
+      save: (surgeries) => {
+        try {
+          localStorage.setItem('surgery_schedule_data', JSON.stringify(surgeries));
+          return true;
+        } catch { return false; }
+      },
+      add: (surgery) => {
+        const surgeries = StorageService.getAll();
+        const newSurgery = { ...surgery, id: Date.now().toString(), createdAt: new Date().toISOString() };
+        surgeries.push(newSurgery);
+        StorageService.save(surgeries);
+        return newSurgery;
+      },
+      update: (id, updates) => {
+        const surgeries = StorageService.getAll();
+        const index = surgeries.findIndex(s => s.id === id);
+        if (index !== -1) {
+          surgeries[index] = { ...surgeries[index], ...updates, updatedAt: new Date().toISOString() };
+          StorageService.save(surgeries);
+          return surgeries[index];
+        }
+        return null;
+      },
+      delete: (id) => {
+        const surgeries = StorageService.getAll();
+        const filtered = surgeries.filter(s => s.id !== id);
+        StorageService.save(filtered);
+        return true;
+      }
+    };
+
+    // 医生列表
+    const surgeons = ['黄卉', '宋国平', '吴豪', '田由', '杨水芬', '郑鑫', '张万云', '张文科'];
+    const operatingRooms = ['负1楼CT室', '2楼CT室', '超声科', '手术间1', '手术间2', '手术间3', '手术间4'];
+    const surgeryTypes = ['腹腔镜下胆囊切除术', '神经阻滞术', '脊髓穿刺检查', '开放性手术', '微创手术', '关节镜手术'];
+
+    // 主应用组件
+    function SurgeryScheduler() {
+      // 初始化示例数据
+      const [surgeries, setSurgeries] = useState(() => {
+        const stored = StorageService.getAll();
+        if (stored.length === 0) {
+          const sampleData = [
+            { id: '1', patientName: '张三', age: '45', bedNumber: '101', admissionNumber: '#M001', surgeryType: '腹腔镜下胆囊切除术', surgeon: '黄卉', operatingRoom: '负1楼CT室', time: '09:00', status: 'pending', notes: '', date: '2026-03-29' },
+            { id: '2', patientName: '李四', age: '52', bedNumber: '102', admissionNumber: '#M002', surgeryType: '神经阻滞术', surgeon: '宋国平', operatingRoom: '2楼CT室', time: '10:30', status: 'ongoing', notes: '', date: '2026-03-29' },
+            { id: '3', patientName: '王五', age: '38', bedNumber: '103', admissionNumber: '#M003', surgeryType: '脊髓穿刺检查', surgeon: '吴豪', operatingRoom: '超声科', time: '08:00', status: 'completed', notes: '患者仰卧位穿刺', date: '2026-03-29' }
+          ];
+          StorageService.save(sampleData);
+          return sampleData;
+        }
+        return stored;
+      });
+      const [currentView, setCurrentView] = useState('list'); // list, timeline, calendar
+      const [selectedDate, setSelectedDate] = useState(new Date('2026-03-29'));
+      const [darkMode, setDarkMode] = useState(false);
+      const [showModal, setShowModal] = useState(false);
+      const [editingId, setEditingId] = useState(null);
+      const [searchTerm, setSearchTerm] = useState('');
+      const [filterStatus, setFilterStatus] = useState('all');
+      const [filterSurgeon, setFilterSurgeon] = useState('all');
+      const [notification, setNotification] = useState('');
+      const [formData, setFormData] = useState({
+        patientName: '', age: '', bedNumber: '', admissionNumber: '',
+        surgeryType: '', surgeon: '', operatingRoom: '', time: '09:00',
+        status: 'pending', notes: ''
+      });
+
+      // 保存手术数据
+      const saveSurgeries = (newSurgeries) => {
+        setSurgeries(newSurgeries);
+        StorageService.save(newSurgeries);
+      };
+
+      // 显示通知
+      const showNotif = (msg) => {
+        setNotification(msg);
+        setTimeout(() => setNotification(''), 3000);
+      };
+
+      // 筛选手术
+      const filteredSurgeries = useMemo(() => {
+        return surgeries.filter(s => {
+          const dateMatch = new Date(s.date || selectedDate).toDateString() === selectedDate.toDateString();
+          const searchMatch = !searchTerm || 
+            s.patientName.includes(searchTerm) || 
+            s.surgeon.includes(searchTerm) ||
+            s.surgeryType.includes(searchTerm);
+          const statusMatch = filterStatus === 'all' || s.status === filterStatus;
+          const surgeonMatch = filterSurgeon === 'all' || s.surgeon === filterSurgeon;
+          return dateMatch && searchMatch && statusMatch && surgeonMatch;
+        }).sort((a, b) => a.time.localeCompare(b.time));
+      }, [surgeries, selectedDate, searchTerm, filterStatus, filterSurgeon]);
+
+      // 统计数据
+      const stats = useMemo(() => {
+        const today = filteredSurgeries;
+        return {
+          total: today.length,
+          pending: today.filter(s => s.status === 'pending').length,
+          ongoing: today.filter(s => s.status === 'ongoing').length,
+          completed: today.filter(s => s.status === 'completed').length,
+          surgeons: new Set(today.map(s => s.surgeon)).size,
+          rooms: new Set(today.map(s => s.operatingRoom)).size
+        };
+      }, [filteredSurgeries]);
+
+      // 添加/编辑手术
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!formData.patientName || !formData.surgeryType || !formData.surgeon) {
+          showNotif('请填写必填项');
+          return;
+        }
+
+        const surgeryData = { ...formData, date: selectedDate.toISOString().split('T')[0] };
+        let updatedSurgeries;
+
+        if (editingId) {
+          updatedSurgeries = surgeries.map(s => s.id === editingId ? { ...s, ...surgeryData } : s);
+          showNotif('手术信息已更新');
+        } else {
+          updatedSurgeries = [...surgeries, { ...surgeryData, id: Date.now().toString() }];
+          showNotif('手术已添加');
+        }
+
+        saveSurgeries(updatedSurgeries);
+        setShowModal(false);
+        setEditingId(null);
+        resetForm();
+      };
+
+      const resetForm = () => {
+        setFormData({
+          patientName: '', age: '', bedNumber: '', admissionNumber: '',
+          surgeryType: '', surgeon: '', operatingRoom: '', time: '09:00',
+          status: 'pending', notes: ''
+        });
+      };
+
+      const handleEdit = (surgery) => {
+        setFormData(surgery);
+        setEditingId(surgery.id);
+        setShowModal(true);
+      };
+
+      const handleDelete = (id) => {
+        if (confirm('确认删除此手术?')) {
+          saveSurgeries(surgeries.filter(s => s.id !== id));
+          showNotif('手术已删除');
+        }
+      };
+
+      const updateStatus = (id, newStatus) => {
+        saveSurgeries(surgeries.map(s => s.id === id ? { ...s, status: newStatus } : s));
+      };
+
+      // 导出功能
+      const handleExportCSV = () => {
+        const headers = ['患者名', '年龄', '床号', '住院号', '手术名称', '主刀', '手术间', '时间', '状态'];
+        const rows = filteredSurgeries.map(s => [
+          s.patientName, s.age, s.bedNumber, s.admissionNumber, s.surgeryType, s.surgeon, s.operatingRoom, s.time, s.status
+        ]);
+        const csv = [headers, ...rows].map(r => r.map(v => `"${v}"`).join(',')).join('\n');
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `手术排程_${selectedDate.toISOString().split('T')[0]}.csv`;
+        a.click();
+        showNotif('已导出CSV');
+      };
+
+      const handleExportJSON = () => {
+        const data = { exportDate: new Date().toISOString(), surgeries: filteredSurgeries };
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `手术排程_${selectedDate.toISOString().split('T')[0]}.json`;
+        a.click();
+        showNotif('已导出JSON');
+      };
+
+      const handleImportJSON = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const data = JSON.parse(event.target?.result || '{}');
+            const importedSurgeries = data.surgeries || [];
+            saveSurgeries([...surgeries, ...importedSurgeries]);
+            showNotif(`已导入 ${importedSurgeries.length} 条记录`);
+          } catch {
+            showNotif('导入失败，文件格式错误');
+          }
+        };
+        reader.readAsText(file);
+      };
+
+      const handleCopyToClipboard = () => {
+        const text = filteredSurgeries.map(s => 
+          `${s.time} | ${s.patientName}(${s.age}岁) | ${s.surgeryType} | ${s.surgeon} | ${s.operatingRoom} | ${s.status}`
+        ).join('\n');
+        navigator.clipboard.writeText(text);
+        showNotif('已复制到剪贴板');
+      };
+
+      // 获取状态颜色
+      const getStatusColor = (status) => {
+        const map = { pending: 'yellow', ongoing: 'blue', completed: 'emerald', cancelled: 'red' };
+        return map[status] || 'gray';
+      };
+
+      const getStatusLabel = (status) => {
+        const map = { pending: '待术', ongoing: '术中', completed: '已完成', cancelled: '已取消' };
+        return map[status] || status;
+      };
+
+      // 医生工作量
+      const surgeonWorkload = useMemo(() => {
+        const workload = {};
+        filteredSurgeries.forEach(s => {
+          workload[s.surgeon] = (workload[s.surgeon] || 0) + 1;
+        });
+        return Object.entries(workload).sort((a, b) => b[1] - a[1]);
+      }, [filteredSurgeries]);
+
+      // 手术间使用情况
+      const roomUsage = useMemo(() => {
+        const usage = {};
+        filteredSurgeries.forEach(s => {
+          usage[s.operatingRoom] = (usage[s.operatingRoom] || 0) + 1;
+        });
+        return Object.entries(usage).sort((a, b) => b[1] - a[1]);
+      }, [filteredSurgeries]);
+
+      return e('div', { className: `min-h-screen transition-colors ${darkMode ? 'dark bg-slate-900' : 'bg-slate-50'}` },
+        // 头部
+        e('header', { className: `bg-white shadow-lg sticky top-0 z-20 ${darkMode ? 'dark bg-slate-800 border-b border-slate-700' : ''}` },
+          e('div', { className: 'max-w-7xl mx-auto px-4 py-4' },
+            e('div', { className: 'flex justify-between items-center' },
+              e('div', { className: 'flex items-center gap-4' },
+                e('div', { className: 'bg-blue-600 p-3 rounded-lg' },
+                  e('svg', { className: 'w-6 h-6 text-white', fill: 'none', stroke: 'currentColor', viewBox: '0 0 24 24' },
+                    e('path', { strokeLinecap: 'round', strokeLinejoin: 'round', strokeWidth: 2, d: 'M13 10V3L4 14h7v7l9-11h-7z' })
+                  )
+                ),
+                e('div', {},
+                  e('h1', { className: `text-3xl font-bold ${darkMode ? 'text-white' : 'text-slate-900'}` }, '疼痛科手术排程系统'),
+                  e('p', { className: 'text-sm text-slate-500' }, 'Pain Department Surgery Schedule System Pro')
+                )
+              ),
+              e('button', {
+                onClick: () => setDarkMode(!darkMode),
+                className: `p-2 rounded-lg ${darkMode ? 'bg-slate-700' : 'bg-slate-200'} transition-colors`
+              }, darkMode ? '☀️' : '🌙')
+            )
+          )
+        ),
+
+        // 主内容
+        e('main', { className: 'max-w-7xl mx-auto px-4 py-8' },
+          // 控制面板
+          e('div', { className: `bg-white rounded-xl shadow-lg p-6 mb-6 ${darkMode ? 'dark bg-slate-800 border border-slate-700' : ''}` },
+            e('div', { className: 'grid grid-cols-1 md:grid-cols-5 gap-4 mb-6' },
+              // 日期选择
+              e('div', {},
+                e('label', { className: 'block text-sm font-medium mb-2' }, '选择日期'),
+                e('input', {
+                  type: 'date',
+                  value: selectedDate.toISOString().split('T')[0],
+                  onChange: (e) => setSelectedDate(new Date(e.target.value)),
+                  className: `w-full px-3 py-2 border rounded-lg ${darkMode ? 'bg-slate-700 border-slate-600' : 'border-slate-300'}`
+                })
+              ),
+              // 搜索
+              e('div', {},
+                e('label', { className: 'block text-sm font-medium mb-2' }, '搜索'),
+                e('input', {
+                  type: 'text',
+                  placeholder: '患者名/医生/手术类型',
+                  value: searchTerm,
+                  onChange: (e) => setSearchTerm(e.target.value),
+                  className: `w-full px-3 py-2 border rounded-lg ${darkMode ? 'bg-slate-700 border-slate-600' : 'border-slate-300'}`
+                })
+              ),
+              // 状态筛选
+              e('div', {},
+                e('label', { className: 'block text-sm font-medium mb-2' }, '状态'),
+                e('select', {
+                  value: filterStatus,
+                  onChange: (e) => setFilterStatus(e.target.value),
+                  className: `w-full px-3 py-2 border rounded-lg ${darkMode ? 'bg-slate-700 border-slate-600' : 'border-slate-300'}`
+                },
+                  e('option', { value: 'all' }, '全部'),
+                  e('option', { value: 'pending' }, '待术'),
+                  e('option', { value: 'ongoing' }, '术中'),
+                  e('option', { value: 'completed' }, '已完成')
+                )
+              ),
+              // 医生筛选
+              e('div', {},
+                e('label', { className: 'block text-sm font-medium mb-2' }, '主刀医生'),
+                e('select', {
+                  value: filterSurgeon,
+                  onChange: (e) => setFilterSurgeon(e.target.value),
+                  className: `w-full px-3 py-2 border rounded-lg ${darkMode ? 'bg-slate-700 border-slate-600' : 'border-slate-300'}`
+                },
+                  e('option', { value: 'all' }, '全部'),
+                  surgeons.map(s => e('option', { key: s, value: s }, s))
+                )
+              )
+            ),
+
+            // 按钮栏
+            e('div', { className: 'flex flex-wrap gap-2 mb-4' },
+              e('button', {
+                onClick: () => { resetForm(); setEditingId(null); setShowModal(true); },
+                className: 'px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium'
+              }, '➕ 新增手术'),
+              e('button', {
+                onClick: handleCopyToClipboard,
+                className: 'px-4 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 transition-colors font-medium'
+              }, '📋 复制排程'),
+              e('button', {
+                onClick: handleExportCSV,
+                className: 'px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors font-medium'
+              }, '📊 导出CSV'),
+              e('button', {
+                onClick: handleExportJSON,
+                className: 'px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors font-medium'
+              }, '💾 导出JSON'),
+              e('label', {
+                className: 'px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors font-medium cursor-pointer'
+              },
+                e('input', {
+                  type: 'file',
+                  accept: '.json',
+                  onChange: handleImportJSON,
+                  className: 'hidden'
+                }),
+                '📥 导入JSON'
+              ),
+              e('div', { className: 'flex gap-2 ml-auto' },
+                ['list', 'timeline', 'calendar'].map(view =>
+                  e('button', {
+                    key: view,
+                    onClick: () => setCurrentView(view),
+                    className: `px-4 py-2 rounded-lg font-medium transition-colors ${
+                      currentView === view 
+                        ? 'bg-blue-600 text-white' 
+                        : `${darkMode ? 'bg-slate-700' : 'bg-slate-200'}`
+                    }`
+                  }, view === 'list' ? '📝' : view === 'timeline' ? '📅' : '🗓️')
+                )
+              )
+            ),
+
+            // 统计面板
+            e('div', { className: 'grid grid-cols-2 md:grid-cols-6 gap-3' },
+              e('div', { className: `bg-blue-50 p-4 rounded-lg ${darkMode ? 'bg-slate-700' : ''}` },
+                e('div', { className: 'text-sm text-slate-600 mb-1' }, '总台次'),
+                e('div', { className: 'text-3xl font-bold text-blue-600' }, stats.total)
+              ),
+              e('div', { className: `bg-yellow-50 p-4 rounded-lg ${darkMode ? 'bg-slate-700' : ''}` },
+                e('div', { className: 'text-sm text-slate-600 mb-1' }, '待术'),
+                e('div', { className: 'text-3xl font-bold text-yellow-600' }, stats.pending)
+              ),
+              e('div', { className: `bg-blue-50 p-4 rounded-lg ${darkMode ? 'bg-slate-700' : ''}` },
+                e('div', { className: 'text-sm text-slate-600 mb-1' }, '术中'),
+                e('div', { className: 'text-3xl font-bold text-blue-600' }, stats.ongoing)
+              ),
+              e('div', { className: `bg-emerald-50 p-4 rounded-lg ${darkMode ? 'bg-slate-700' : ''}` },
+                e('div', { className: 'text-sm text-slate-600 mb-1' }, '已完成'),
+                e('div', { className: 'text-3xl font-bold text-emerald-600' }, stats.completed)
+              ),
+              e('div', { className: `bg-purple-50 p-4 rounded-lg ${darkMode ? 'bg-slate-700' : ''}` },
+                e('div', { className: 'text-sm text-slate-600 mb-1' }, '医生数'),
+                e('div', { className: 'text-3xl font-bold text-purple-600' }, stats.surgeons)
+              ),
+              e('div', { className: `bg-pink-50 p-4 rounded-lg ${darkMode ? 'bg-slate-700' : ''}` },
+                e('div', { className: 'text-sm text-slate-600 mb-1' }, '手术间数'),
+                e('div', { className: 'text-3xl font-bold text-pink-600' }, stats.rooms)
+              )
+            )
+          ),
+
+          // 通知
+          notification && e('div', { className: 'mb-4 p-4 bg-green-100 text-green-800 rounded-lg fade-in' }, notification),
+
+          // 内容区域
+          e('div', { className: 'grid grid-cols-1 lg:grid-cols-4 gap-6' },
+            // 主要视图
+            e('div', { className: 'lg:col-span-3' },
+              // 手术列表视图
+              currentView === 'list' && e('div', { className: 'space-y-4' },
+                filteredSurgeries.length > 0 ? filteredSurgeries.map(surgery => {
+                  const color = getStatusColor(surgery.status);
+                  const colorMap = {
+                    yellow: { border: 'border-l-yellow-400', bg: 'bg-yellow-50', badge: 'bg-yellow-100 text-yellow-700' },
+                    blue: { border: 'border-l-blue-500', bg: 'bg-blue-50', badge: 'bg-blue-100 text-blue-700' },
+                    emerald: { border: 'border-l-emerald-500', bg: 'bg-emerald-50', badge: 'bg-emerald-100 text-emerald-700' },
+                    red: { border: 'border-l-red-500', bg: 'bg-red-50', badge: 'bg-red-100 text-red-700' }
+                  };
+                  const colors = colorMap[color];
+                  return e('div', { key: surgery.id, className: `border-l-4 ${colors.border} ${colors.bg} rounded-lg p-5 shadow-md hover:shadow-lg transition-shadow ${darkMode ? 'dark bg-slate-700 border-l-blue-400' : ''}` },
+                    e('div', { className: 'flex justify-between items-start mb-4' },
+                      e('div', { className: 'flex-1' },
+                        e('div', { className: 'flex items-center gap-3 mb-2' },
+                          e('span', { className: 'bg-blue-600 text-white text-xs font-bold px-2 py-1 rounded' }, surgery.time),
+                          e('h3', { className: 'text-lg font-bold' }, surgery.patientName),
+                          e('span', { className: 'text-sm text-slate-600' }, `${surgery.age}岁`)
+                        ),
+                        e('p', { className: 'text-base font-semibold text-blue-700 mb-3' }, surgery.surgeryType)
+                      ),
+                      e('div', { className: 'flex gap-2' },
+                        e('span', { className: `px-3 py-1 rounded-full text-xs font-semibold ${colors.badge}` }, getStatusLabel(surgery.status)),
+                        surgery.status !== 'completed' && surgery.status !== 'cancelled' && e('select', {
+                          value: surgery.status,
+                          onChange: (e) => updateStatus(surgery.id, e.target.value),
+                          className: 'text-xs px-2 py-1 border rounded bg-white border-slate-300'
+                        },
+                          e('option', { value: 'pending' }, '待术'),
+                          e('option', { value: 'ongoing' }, '术中'),
+                          e('option', { value: 'completed' }, '完成')
+                        )
+                      )
+                    ),
+                    e('div', { className: 'grid grid-cols-4 gap-4 text-sm mb-3 p-3 rounded bg-white/50' },
+                      e('div', {}, e('span', { className: 'text-slate-600 text-xs' }, '床号'), e('p', { className: 'font-semibold' }, surgery.bedNumber)),
+                      e('div', {}, e('span', { className: 'text-slate-600 text-xs' }, '住院号'), e('p', { className: 'font-semibold' }, surgery.admissionNumber)),
+                      e('div', {}, e('span', { className: 'text-slate-600 text-xs' }, '主刀'), e('p', { className: 'font-semibold' }, surgery.surgeon)),
+                      e('div', {}, e('span', { className: 'text-slate-600 text-xs' }, '手术间'), e('p', { className: 'font-semibold' }, surgery.operatingRoom))
+                    ),
+                    surgery.notes && e('div', { className: 'text-sm p-3 bg-white/50 rounded mb-3' },
+                      e('strong', {}, '备注: '), surgery.notes
+                    ),
+                    e('div', { className: 'flex gap-2 justify-end' },
+                      e('button', {
+                        onClick: () => handleEdit(surgery),
+                        className: 'px-3 py-1 bg-blue-500 text-white text-sm rounded hover:bg-blue-600'
+                      }, '✏️ 编辑'),
+                      e('button', {
+                        onClick: () => handleDelete(surgery.id),
+                        className: 'px-3 py-1 bg-red-500 text-white text-sm rounded hover:bg-red-600'
+                      }, '🗑️ 删除')
+                    )
+                  );
+                }) : e('div', { className: 'text-center py-12 text-slate-500' }, '暂无手术排程')
+              ),
+
+              // 时间表视图
+              currentView === 'timeline' && e('div', { className: `border rounded-lg p-6 ${darkMode ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-white'}` },
+                e('h3', { className: 'text-lg font-bold mb-6' }, '时间表视图'),
+                e('div', { className: 'space-y-3' },
+                  filteredSurgeries.length > 0 ? filteredSurgeries.map(s => {
+                    const progress = ['pending', 'ongoing', 'completed'].indexOf(s.status) * 50;
+                    return e('div', { key: s.id, className: 'border-l-4 border-l-blue-500 pl-4 py-3' },
+                      e('div', { className: 'flex justify-between mb-2' },
+                        e('div', {},
+                          e('span', { className: 'font-bold text-lg' }, s.time),
+                          e('span', { className: 'ml-4 text-sm text-slate-600' }, s.patientName)
+                        ),
+                        e('span', { className: 'text-sm font-semibold' }, s.surgeon)
+                      ),
+                      e('div', { className: 'w-full bg-slate-200 rounded-full h-2 overflow-hidden' },
+                        e('div', { className: 'bg-blue-600 h-full transition-all', style: { width: `${progress}%` } })
+                      )
+                    );
+                  }) : e('p', { className: 'text-center text-slate-500 py-12' }, '暂无数据')
+                )
+              ),
+
+              // 日历视图
+              currentView === 'calendar' && e('div', { className: `border rounded-lg p-6 ${darkMode ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-white'}` },
+                e('h3', { className: 'text-lg font-bold mb-6' }, '日历视图'),
+                e('div', { className: 'text-center' },
+                  e('p', { className: 'text-slate-600' }, `${selectedDate.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}`),
+                  e('p', { className: 'text-2xl font-bold mt-4' }, `本日 ${filteredSurgeries.length} 台手术`)
+                )
+              )
+            ),
+
+            // 侧边栏 - 统计分析
+            e('div', { className: 'space-y-4' },
+              // 医生工作量
+              e('div', { className: `border rounded-lg p-4 ${darkMode ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-white'}` },
+                e('h4', { className: 'font-bold mb-4 text-sm' }, '👨‍⚕️ 医生工作量'),
+                e('div', { className: 'space-y-2' },
+                  surgeonWorkload.length > 0 ? surgeonWorkload.map(([surgeon, count]) =>
+                    e('div', { key: surgeon, className: 'flex justify-between items-center' },
+                      e('span', { className: 'text-sm' }, surgeon),
+                      e('span', { className: 'bg-blue-100 text-blue-700 px-2 py-1 rounded text-xs font-bold' }, `${count}台`)
+                    )
+                  ) : e('p', { className: 'text-xs text-slate-500' }, '无数据')
+                )
+              ),
+
+              // 手术间使用
+              e('div', { className: `border rounded-lg p-4 ${darkMode ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-white'}` },
+                e('h4', { className: 'font-bold mb-4 text-sm' }, '🏥 手术间使用'),
+                e('div', { className: 'space-y-2' },
+                  roomUsage.length > 0 ? roomUsage.map(([room, count]) =>
+                    e('div', { key: room, className: 'flex justify-between items-center' },
+                      e('span', { className: 'text-sm truncate' }, room),
+                      e('span', { className: 'bg-emerald-100 text-emerald-700 px-2 py-1 rounded text-xs font-bold' }, `${count}台`)
+                    )
+                  ) : e('p', { className: 'text-xs text-slate-500' }, '无数据')
+                )
+              ),
+
+              // 快速统计
+              e('div', { className: `border rounded-lg p-4 ${darkMode ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-white'}` },
+                e('h4', { className: 'font-bold mb-4 text-sm' }, '📊 快速统计'),
+                e('div', { className: 'space-y-2 text-sm' },
+                  e('div', { className: 'flex justify-between' }, e('span', {}, '平均年龄'), e('span', { className: 'font-bold' }, filteredSurgeries.length > 0 ? Math.round(filteredSurgeries.reduce((a, b) => a + parseInt(b.age), 0) / filteredSurgeries.length) : '-')),
+                  e('div', { className: 'flex justify-between' }, e('span', {}, '床位占用'), e('span', { className: 'font-bold' }, new Set(filteredSurgeries.map(s => s.bedNumber)).size)),
+                  e('div', { className: 'flex justify-between' }, e('span', {}, '数据总量'), e('span', { className: 'font-bold' }, surgeries.length))
+                )
+              )
+            )
+          )
+        ),
+
+        // 模态框 - 添加/编辑手术
+        showModal && e('div', { className: 'modal-overlay' },
+          e('div', { className: `bg-white rounded-xl shadow-2xl w-full max-w-2xl p-8 ${darkMode ? 'dark bg-slate-800' : ''}` },
+            e('h2', { className: 'text-2xl font-bold mb-6' }, editingId ? '编辑手术' : '新增手术'),
+
+            e('form', { onSubmit: handleSubmit, className: 'space-y-4' },
+              e('div', { className: 'grid grid-cols-2 gap-4' },
+                e('div', {},
+                  e('label', { className: 'block text-sm font-medium mb-2' }, '患者名 *'),
+                  e('input', {
+                    type: 'text',
+                    value: formData.patientName,
+                    onChange: (e) => setFormData({ ...formData, patientName: e.target.value }),
+                    className: `w-full px-3 py-2 border rounded-lg ${darkMode ? 'bg-slate-700 border-slate-600' : 'border-slate-300'}`
+                  })
+                ),
+                e('div', {},
+                  e('label', { className: 'block text-sm font-medium mb-2' }, '年龄'),
+                  e('input', {
+                    type: 'number',
+                    value: formData.age,
+                    onChange: (e) => setFormData({ ...formData, age: e.target.value }),
+                    className: `w-full px-3 py-2 border rounded-lg ${darkMode ? 'bg-slate-700 border-slate-600' : 'border-slate-300'}`
+                  })
+                ),
+                e('div', {},
+                  e('label', { className: 'block text-sm font-medium mb-2' }, '床号'),
+                  e('input', {
+                    type: 'text',
+                    value: formData.bedNumber,
+                    onChange: (e) => setFormData({ ...formData, bedNumber: e.target.value }),
+                    className: `w-full px-3 py-2 border rounded-lg ${darkMode ? 'bg-slate-700 border-slate-600' : 'border-slate-300'}`
+                  })
+                ),
+                e('div', {},
+                  e('label', { className: 'block text-sm font-medium mb-2' }, '住院号'),
+                  e('input', {
+                    type: 'text',
+                    value: formData.admissionNumber,
+                    onChange: (e) => setFormData({ ...formData, admissionNumber: e.target.value }),
+                    className: `w-full px-3 py-2 border rounded-lg ${darkMode ? 'bg-slate-700 border-slate-600' : 'border-slate-300'}`
+                  })
+                ),
+                e('div', {},
+                  e('label', { className: 'block text-sm font-medium mb-2' }, '手术类型 *'),
+                  e('select', {
+                    value: formData.surgeryType,
+                    onChange: (e) => setFormData({ ...formData, surgeryType: e.target.value }),
+                    className: `w-full px-3 py-2 border rounded-lg ${darkMode ? 'bg-slate-700 border-slate-600' : 'border-slate-300'}`
+                  },
+                    e('option', { value: '' }, '选择手术类型'),
+                    surgeryTypes.map(t => e('option', { key: t, value: t }, t))
+                  )
+                ),
+                e('div', {},
+                  e('label', { className: 'block text-sm font-medium mb-2' }, '主刀医生 *'),
+                  e('select', {
+                    value: formData.surgeon,
+                    onChange: (e) => setFormData({ ...formData, surgeon: e.target.value }),
+                    className: `w-full px-3 py-2 border rounded-lg ${darkMode ? 'bg-slate-700 border-slate-600' : 'border-slate-300'}`
+                  },
+                    e('option', { value: '' }, '选择医生'),
+                    surgeons.map(s => e('option', { key: s, value: s }, s))
+                  )
+                ),
+                e('div', {},
+                  e('label', { className: 'block text-sm font-medium mb-2' }, '手术间'),
+                  e('select', {
+                    value: formData.operatingRoom,
+                    onChange: (e) => setFormData({ ...formData, operatingRoom: e.target.value }),
+                    className: `w-full px-3 py-2 border rounded-lg ${darkMode ? 'bg-slate-700 border-slate-600' : 'border-slate-300'}`
+                  },
+                    e('option', { value: '' }, '选择手术间'),
+                    operatingRooms.map(r => e('option', { key: r, value: r }, r))
+                  )
+                ),
+                e('div', {},
+                  e('label', { className: 'block text-sm font-medium mb-2' }, '时间'),
+                  e('input', {
+                    type: 'time',
+                    value: formData.time,
+                    onChange: (e) => setFormData({ ...formData, time: e.target.value }),
+                    className: `w-full px-3 py-2 border rounded-lg ${darkMode ? 'bg-slate-700 border-slate-600' : 'border-slate-300'}`
+                  })
+                ),
+                e('div', {},
+                  e('label', { className: 'block text-sm font-medium mb-2' }, '状态'),
+                  e('select', {
+                    value: formData.status,
+                    onChange: (e) => setFormData({ ...formData, status: e.target.value }),
+                    className: `w-full px-3 py-2 border rounded-lg ${darkMode ? 'bg-slate-700 border-slate-600' : 'border-slate-300'}`
+                  },
+                    e('option', { value: 'pending' }, '待术'),
+                    e('option', { value: 'ongoing' }, '术中'),
+                    e('option', { value: 'completed' }, '已完成'),
+                    e('option', { value: 'cancelled' }, '已取消')
+                  )
+                )
+              ),
+              e('div', {},
+                e('label', { className: 'block text-sm font-medium mb-2' }, '备注'),
+                e('textarea', {
+                  value: formData.notes,
+                  onChange: (e) => setFormData({ ...formData, notes: e.target.value }),
+                  className: `w-full px-3 py-2 border rounded-lg h-20 ${darkMode ? 'bg-slate-700 border-slate-600' : 'border-slate-300'}`
+                })
+              ),
+              e('div', { className: 'flex gap-3 justify-end mt-6' },
+                e('button', {
+                  type: 'button',
+                  onClick: () => { setShowModal(false); setEditingId(null); resetForm(); },
+                  className: 'px-6 py-2 bg-slate-300 text-slate-900 rounded-lg hover:bg-slate-400'
+                }, '取消'),
+                e('button', {
+                  type: 'submit',
+                  className: 'px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium'
+                }, editingId ? '更新' : '添加')
+              )
+            )
+          )
+        )
+      );
+    }
+
+    // 挂载应用
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(e(SurgeryScheduler));
+  </script>
+</body>
+</html>
